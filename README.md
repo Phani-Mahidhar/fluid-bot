@@ -13,11 +13,12 @@ cd fluid-trader
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Run the daily inference (production mode)
-python daily_inference.py
+# 2. Launch the web dashboard
+python app.py
+# → Open http://localhost:5000
 
-# 3. Or run the stress-test backtest
-python main.py
+# 3. Or run the daily inference via CLI
+python daily_inference.py
 ```
 
 ---
@@ -42,13 +43,49 @@ fluid-trader/
 ├── alerts.py             # Email alert placeholder (HTML formatter)
 ├── backtest.py           # Per-stock backtest + plotting utilities
 │
+├── app.py                # ★ Flask web dashboard server
+├── templates/index.html  # Dashboard UI
+├── static/style.css      # Dark glassmorphism theme
+├── static/app.js         # Frontend logic + live polling
+│
 ├── requirements.txt
-└── market_data.db        # Auto-created SQLite cache (gitignore this)
+├── holdings.json         # Auto-managed current positions
+└── market_data.db        # Auto-created SQLite cache
 ```
 
 ---
 
-## Entry Points
+## Web Dashboard
+
+```bash
+python app.py
+# → http://localhost:5000
+```
+
+The dashboard provides a visual interface for the entire system:
+
+| Panel | Purpose |
+|-------|--------|
+| **⚡ Run Inference** | Trigger daily or monthly scans with live progress bar |
+| **📊 My Positions** | View, add, or remove holdings. Manual entries take ticker + direction only |
+| **🎯 Bot Suggestions** | Signal cards sorted by confidence — SNIPER BUY / STRONG BUY / EXIT |
+| **🔥 Trending** | All scanned stocks ranked by confidence with visual bars |
+
+**Running inference from the UI:**
+- Click **Daily Scan** → trains on 2yr data, scans top 150 stocks
+- Click **Monthly Scan** → trains on 5yr data for longer-term signals
+- Progress updates live in the progress bar and log box
+- Results auto-populate the Suggestions and Trending panels
+
+**Managing positions:**
+- Click **+ Add Position** → enter ticker (e.g. `RELIANCE.NS`) and direction (LONG/SHORT)
+- Confidence is computed by the model, not manually entered
+- Click **✕** to remove a position
+- Bot-managed and manual positions are tracked separately
+
+---
+
+## CLI Entry Points
 
 ### 1. `daily_inference.py` — Production Daily Scan
 
@@ -59,7 +96,7 @@ python daily_inference.py
 ```
 
 **What it does:**
-1. Fetches top 50 most liquid Nifty 500 stocks (by volume)
+1. Fetches top 150 most liquid Nifty 500 stocks (by volume)
 2. Gap-fills missing OHLCV data into SQLite (smart — only fetches new candles)
 3. Trains a fresh NeuralODE model per stock (50 epochs)
 4. Runs portfolio backtest on the 6-month test period
@@ -146,7 +183,7 @@ All tunable parameters live in **`config.py`**:
 | `LOOKBACK` | `30` | Rolling window (trading days) |
 | `VOL_WINDOW` | `20` | Volatility calculation window |
 | `TRAIN_RATIO` | `0.75` | Train/test split (75% train) |
-| `TOP_N` | `50` | Top N liquid stocks from Nifty 500. Set `None` for full 500 |
+| `TOP_N` | `150` | Top N liquid stocks from Nifty 500. Set `None` for full 500 |
 | `BENCHMARK` | `"^NSEI"` | Benchmark index for comparison |
 | `EPOCHS` | `50` | Training epochs per stock |
 | `LR` | `1e-3` | Adam learning rate |
@@ -263,6 +300,7 @@ TOP_N = None    # disables the volume filter
 torch          # PyTorch (MPS/CUDA/CPU auto-detected)
 yfinance       # Market data from Yahoo Finance
 niftystocks    # Nifty 500 ticker lists
+flask          # Web dashboard
 numpy
 pandas
 matplotlib
