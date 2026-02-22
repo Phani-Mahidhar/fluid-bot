@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from model import FluidGeometricNet
-from loss import DifferentiableSharpeRatioLoss
+from loss import DifferentiableSortinoRatioLoss
 
 
 def train(
@@ -33,7 +33,7 @@ def train(
     losses : list[float]
     """
     kwargs = {} if base_reg_factor is None else {"base_reg_factor": base_reg_factor}
-    criterion = DifferentiableSharpeRatioLoss(**kwargs)
+    criterion = DifferentiableSortinoRatioLoss(base_reg_factor=base_reg_factor)
     optimiser = torch.optim.Adam(model.parameters(), lr=lr)
     model.train()
 

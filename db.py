@@ -78,6 +78,25 @@ class MarketDataManager:
             return 0
 
         return self._store(ticker, df)
+        
+    def update_data_batch(self, tickers: list[str], max_workers: int = 20) -> int:
+        """
+        Concurrent fetching for multiple tickers.
+        Returns total new rows inserted.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        total_rows = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.update_data, t): t for t in tickers}
+            for future in as_completed(futures):
+                try:
+                    rows = future.result()
+                    total_rows += rows
+                except Exception as e:
+                    t = futures[future]
+                    print(f"    ⚠ Error fetching '{t}': {e}")
+        return total_rows
 
     # ──────────────────── Read Features from DB ───────────────
     def get_features(self, ticker: str) -> pd.DataFrame:

@@ -23,6 +23,8 @@ from config import (
     LOOKBACK,
     BASE_REG_FACTOR,
     CONFIDENCE_THRESHOLD,
+    TRANSACTION_COST,
+    STOP_LOSS_PCT,
 )
 from data import fetch_data, get_dataloaders, MarketDataset
 from model import FluidGeometricNet
@@ -100,46 +102,60 @@ def backtest_portfolio(stock_results: dict[str, dict]) -> dict:
     min_len = min(len(r["test_returns"]) for r in stock_results.values())
     n_days = min_len
 
-    daily_returns = []
-    daily_n_held = []
-    sniper_trades_profit = 0
-    sniper_trades_total = 0
+    # ── Vectorized Backtest ──────────────────────────────────
+    n_stocks = len(stock_results)
+    pos_matrix = np.zeros((n_days, n_stocks))
+    ret_matrix = np.zeros((n_days, n_stocks))
+    
+    for i, (ticker, res) in enumerate(stock_results.items()):
+        p = res["test_positions"][:n_days]
+        r = res["test_returns"][:n_days]
+        # Pad if slightly short
+        if len(p) < n_days:
+            p = np.pad(p, (0, n_days - len(p)), 'constant')
+        if len(r) < n_days:
+            r = np.pad(r, (0, n_days - len(r)), 'constant')
+            
+        pos_matrix[:, i] = p
+        ret_matrix[:, i] = r
 
-    for day in range(n_days):
-        contributing_returns = []
+    # Shift positions by 1 day (trade at yesterday's close/today's open)
+    pos_matrix = np.roll(pos_matrix, 1, axis=0)
+    pos_matrix[0, :] = 0.0
 
-        for ticker, res in stock_results.items():
-            pos = res["test_positions"]
-            rets = res["test_returns"]
+    # 1. Action filtering
+    # Go long only if confident
+    trade_mask = (pos_matrix > threshold)
+    
+    # 2. Continuous Weighting
+    # Allocate proportionally to confidence score across qualifying assets on each day
+    raw_weights = np.where(trade_mask, pos_matrix, 0.0)
+    row_sums = raw_weights.sum(axis=1, keepdims=True)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        weights = np.where(row_sums > 0, raw_weights / row_sums, 0.0)
 
-            if day >= len(pos) or day >= len(rets):
-                continue
+    # 3. Stop-Loss Trigger
+    # Cap daily return at STOP_LOSS_PCT
+    capped_returns = np.where(ret_matrix < STOP_LOSS_PCT, STOP_LOSS_PCT, ret_matrix)
 
-            # Shift by +1: today's signal applies to tomorrow's return
-            if day == 0:
-                continue  # no signal for first day
+    # 4. Gross Portfolio Daily Returns
+    gross_daily_returns = (weights * capped_returns).sum(axis=1)
 
-            signal = pos[day - 1]  # yesterday's model output
-            confidence = abs(signal)
+    # 5. Transaction Costs
+    # Change in absolute weight * cost
+    turnover = np.abs(np.diff(weights, axis=0, prepend=0)).sum(axis=1)
+    daily_returns = gross_daily_returns - (turnover * TRANSACTION_COST)
 
-            if confidence > threshold and signal > 0:
-                # Long-only: only enter when action > threshold (BUY)
-                contributing_returns.append(rets[day])
-                sniper_trades_total += 1
-                if rets[day] > 0:
-                    sniper_trades_profit += 1
-
-        if contributing_returns:
-            # Equal-weight portfolio return
-            port_ret = np.mean(contributing_returns)
-        else:
-            port_ret = 0.0  # flat / cash
-
-        daily_returns.append(port_ret)
-        daily_n_held.append(len(contributing_returns))
-
-    daily_returns = np.array(daily_returns)
     equity_curve = np.cumprod(1.0 + daily_returns)
+    daily_n_held = trade_mask.sum(axis=1)
+    
+    # Trading stats for reporting
+    active_mask = (weights > 0).flatten()
+    sniper_trades_total = np.sum(active_mask)
+    if sniper_trades_total > 0:
+        sniper_trades_profit = np.sum((weights * capped_returns).flatten()[active_mask] > 0)
+    else:
+        sniper_trades_profit = 0
 
     # ── Metrics ───────────────────────────────────────────────
     total_return = equity_curve[-1] - 1.0

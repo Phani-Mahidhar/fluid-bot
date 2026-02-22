@@ -11,6 +11,7 @@ Architecture
 
 import torch
 import torch.nn as nn
+from torchdiffeq import odeint
 
 from config import INPUT_DIM, HIDDEN_DIM, GRU_LAYERS, ODE_STEPS
 
@@ -32,48 +33,16 @@ class ODEFunc(nn.Module):
             nn.Linear(dim, dim),
         )
 
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
+    def forward(self, t: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        # torchdiffeq requires the signature (t, y)
         return self.net(h)
-
-
-# ──────────────────────── RK4 Solver ─────────────────────────
-class NeuralODE(nn.Module):
-    """
-    Custom 4th-order Runge-Kutta integrator.
-
-    Given an initial state h₀ the solver computes:
-        k₁ = f(hₙ)
-        k₂ = f(hₙ + dt/2 · k₁)
-        k₃ = f(hₙ + dt/2 · k₂)
-        k₄ = f(hₙ + dt   · k₃)
-        h_{n+1} = hₙ + (dt / 6)(k₁ + 2k₂ + 2k₃ + k₄)
-
-    The integration is performed over a unit interval [0, 1]
-    split into `n_steps` sub-steps.
-    """
-
-    def __init__(self, func: ODEFunc, n_steps: int = ODE_STEPS):
-        super().__init__()
-        self.func = func
-        self.n_steps = n_steps
-        self.dt = 1.0 / n_steps
-
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
-        dt = self.dt
-        for _ in range(self.n_steps):
-            k1 = self.func(h)
-            k2 = self.func(h + 0.5 * dt * k1)
-            k3 = self.func(h + 0.5 * dt * k2)
-            k4 = self.func(h + dt * k3)
-            h = h + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-        return h
 
 
 # ──────────────────────── Full Model ─────────────────────────
 class FluidGeometricNet(nn.Module):
     """
     End-to-end model:
-      Input  (B, T, 2) → GRU → LayerNorm → NeuralODE → Linear → Tanh → (B, 1)
+      Input  (B, T, 2) → GRU → LayerNorm → ODEInt → Linear → Tanh → (B, 1)
     """
 
     def __init__(self):
@@ -88,7 +57,10 @@ class FluidGeometricNet(nn.Module):
         self.layer_norm = nn.LayerNorm(HIDDEN_DIM)
 
         # --- Core dynamics ---
-        self.ode = NeuralODE(ODEFunc(HIDDEN_DIM))
+        self.ode_func = ODEFunc(HIDDEN_DIM)
+        # Integration time interval [0, 1]
+        # Registered as a buffer so it moves to the correct device automatically
+        self.register_buffer("integration_time", torch.tensor([0.0, 1.0]))
 
         # --- Action head ---
         self.head = nn.Sequential(
@@ -111,8 +83,12 @@ class FluidGeometricNet(nn.Module):
         h = h_n[-1]  # take last layer: (B, HIDDEN_DIM)
         h = self.layer_norm(h)
 
-        # Integrate hidden state through learned ODE dynamics
-        h = self.ode(h)
+        # Integrate hidden state through learned ODE dynamics using dopri5
+        # odeint returns outputs at all requested t, so shape is (len(t), B, HIDDEN_DIM)
+        out = odeint(self.ode_func, h, self.integration_time, method="dopri5")
+        
+        # We only care about the final state at t=1
+        h_final = out[-1]
 
         # Map to position
-        return self.head(h)
+        return self.head(h_final)

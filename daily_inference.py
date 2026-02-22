@@ -91,12 +91,9 @@ def label_signal(action: float, confidence: float) -> str:
 # ──────────────────────── Per-Stock Pipeline ──────────────────
 def process_stock(ticker: str, mgr: MarketDataManager) -> dict | None:
     """Gap-fill data → train → generate test positions + latest signal."""
-    # 1. Gap-fill
+    # 1. Load features from DB (gap-filling is now handled in batch beforehand)
     try:
-        new_rows = mgr.update_data(ticker)
-    except Exception as e:
-        print(f"    ⚠  {ticker}: data error — {e}")
-        return None
+        new_rows = 0 # Tracked globally now
 
     # 2. Load features from DB
     try:
@@ -280,8 +277,14 @@ def main() -> None:
     universe = get_nifty500_universe()
     print(f"       {len(universe)} stocks selected.\n")
 
-    # ── 2. Process each stock ─────────────────────────────────
-    print("[2/5] Gap-filling data & training models …\n")
+    # ── 2. Batch Gap-Filling ──────────────────────────────────
+    print("[2/5] Optimizing data cache (Batch fetch) …")
+    # Fetch all missing data for the universe concurrently
+    new_rows = mgr.update_data_batch(universe)
+    print(f"       Appended {new_rows} new market data rows.\n")
+
+    # ── 3. Process each stock ─────────────────────────────────
+    print("[3/5] Training models & Generating Signals …\n")
     results: dict[str, dict] = {}
     buy_signals: list[dict] = []
     exit_signals: list[dict] = []

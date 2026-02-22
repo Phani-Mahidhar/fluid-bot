@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from niftystocks import ns
 
-from config import LOOKBACK, VOL_WINDOW, TRAIN_RATIO, BATCH_SIZE, TOP_N
+from config import LOOKBACK, VOL_WINDOW, TRAIN_RATIO, BATCH_SIZE, TOP_N, BENCHMARK
 
 
 # ──────────────────────── Universe Selection ──────────────────
@@ -72,7 +72,9 @@ def get_nifty500_universe(top_n: int | None = TOP_N) -> list[str]:
 
 # ──────────────────────── Fetch & Engineer ────────────────────
 def fetch_data(ticker: str, period: str) -> pd.DataFrame:
-    """Download OHLCV, compute log returns + rolling volatility, drop bad rows."""
+    """Download OHLCV, compute log returns + rolling volatility, drop bad rows.
+       Normalizes stock log return by subtracting the benchmark (NIFTY 50) log return.
+    """
     df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
 
     if df.empty:
@@ -80,6 +82,18 @@ def fetch_data(ticker: str, period: str) -> pd.DataFrame:
 
     close = df["Close"].squeeze()
     log_ret = np.log(close / close.shift(1))
+    
+    # ── Cross-Sectional Normalization (Market Neutrality) ──
+    # Fetch benchmark data
+    df_bm = yf.download(BENCHMARK, period=period, auto_adjust=True, progress=False)
+    if not df_bm.empty:
+        close_bm = df_bm["Close"].squeeze()
+        log_ret_bm = np.log(close_bm / close_bm.shift(1))
+        # Reindex to ensure dates align perfectly, forward fill any tiny missing gaps
+        log_ret_bm = log_ret_bm.reindex(log_ret.index).ffill()
+        # Subtract benchmark return to isolate pure alpha
+        log_ret = log_ret - log_ret_bm
+
     vol = log_ret.rolling(VOL_WINDOW).std()
 
     features = pd.DataFrame({"log_ret": log_ret, "vol": vol}, index=df.index)
